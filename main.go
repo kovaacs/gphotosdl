@@ -317,11 +317,26 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	defer g.mu.Unlock()
 	url := gphotoURL + photoID
 
+	slog := slog.With("id", photoID)
+
+	// Create a new blank browser tab
+	slog.Error("Open new tab")
+	page, err := g.browser.Page(proto.TargetCreateTarget{})
+	if err != nil {
+		return "", fmt.Errorf("failed to open browser tab for photo %q: %w", photoID, err)
+	}
+	defer func() {
+		err := page.Close()
+		if err != nil {
+			slog.Error("Error closing tab", "Error", err)
+		}
+	}()
+
 	var netResponse *proto.NetworkResponseReceived
 
 	// Check the correct network request is received
-	waitNetwork := g.page.EachEvent(func(e *proto.NetworkResponseReceived) bool {
-		slog.Debug("network response", "url", e.Response.URL, "status", e.Response.Status)
+	waitNetwork := page.EachEvent(func(e *proto.NetworkResponseReceived) bool {
+		slog.Debug("network response", "rxURL", e.Response.URL, "status", e.Response.Status)
 		if strings.HasPrefix(e.Response.URL, gphotoURLReal) {
 			netResponse = e
 			return true
@@ -333,16 +348,19 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	})
 
 	// Navigate to the photo URL
-	err := g.page.Navigate(url)
+	slog.Debug("Navigate to photo URL")
+	err = page.Navigate(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to navigate to photo %q: %w", photoID, err)
 	}
+	slog.Debug("Wait for page to load")
 	err = g.page.WaitLoad()
 	if err != nil {
 		return "", fmt.Errorf("gphoto page load: %w", err)
 	}
 
 	// Wait for the photos network request to happen
+	slog.Debug("Wait for network response")
 	waitNetwork()
 
 	// Print request headers
@@ -353,10 +371,14 @@ func (g *Gphotos) Download(photoID string) (string, error) {
 	// Download waiter
 	wait := g.browser.WaitDownload(downloadDir)
 
+	// Urg doesn't always catch the keypress so wait
+	time.Sleep(time.Second)
+
 	// Shift-D to download
-	g.page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
+	page.KeyActions().Press(input.ShiftLeft).Type('D').MustDo()
 
 	// Wait for download
+	slog.Debug("Wait for download")
 	info := wait()
 	path := filepath.Join(downloadDir, info.GUID)
 
